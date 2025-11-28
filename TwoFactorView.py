@@ -11,9 +11,9 @@ class TwoFactorView(ft.View):
         self.authToken = authToken
         
         self.codeField = ft.TextField(
-            label="6桁の2FAコード", 
-            width=300, 
-            input_filter=ft.InputFilter(allow=True, regex_string=r"[1, 3-10]", replacement_string=""),
+            label="6桁の2FAコード",
+            width=300,
+            # 入力制限を簡素化（誤った正規表現を削除）
             max_length=6
         )
         self.statusLabel = ft.Text("認証アプリまたはメールで受け取ったコードを入力してください。", color=ft.Colors.BLUE_GREY)
@@ -46,30 +46,41 @@ class TwoFactorView(ft.View):
         self.page.update()
         
         try:
-            cookies = {
-                "auth": self.authToken # Basic認証で取得した一時トークンを使用
-            }
+            # セッションを使ってクッキーを送る（サーバーが新しい auth を返すことがあるため）
+            session = requests.Session()
+            session.cookies.set("auth", self.authToken, domain="api.vrchat.cloud")
+
             headers = {
                 "User-Agent": "Flet VRCWM Client",
                 "Content-Type": "application/json"
             }
-            data = {
-                "code": code
-            }
-            
-            # Verify 2FA code POSTエンドポイントを使用 [2]
-            verify_url = f"{API_BASE_URL}/auth/twofactor/totp/verify" 
-            
-            response = requests.post(verify_url, headers=headers, cookies=cookies, data=json.dumps(data))
-            response.raise_for_status() 
+            data = {"code": code}
 
-            # VRChat APIが2FA検証成功時に返すステータスをチェック
+            # C# 実装と同様のエンドポイント名を利用
+            verify_url = f"{API_BASE_URL}/auth/twofactorauth/totp/verify"
+
+            response = session.post(verify_url, headers=headers, json=data)
+            response.raise_for_status()
+
+            # 成功したら、サーバーが新しい auth Cookie を返すことがあるので取得する
+            new_auth = response.cookies.get("auth")
+            if new_auth:
+                # localstorage に保存しておく（MainApp のルーティングで参照される）
+                self.page.client_storage.set("authToken", new_auth)
+                # Optional: インスタンス変数も更新
+                self.authToken = new_auth
+
             if response.status_code == 200:
-                # 2FA検証に成功すると、既存のauthトークンがフルアクセス可能な状態になります
                 return True
-            
+
         except requests.exceptions.HTTPError as err:
-            if response.status_code == 401 or response.status_code == 400:
+            # response が存在する場合のステータスチェック
+            try:
+                status = response.status_code
+            except:
+                status = None
+
+            if status in (400, 401):
                 self.statusLabel.value = "❌ 検証失敗: コードが正しくないか、トークンの有効期限が切れました。"
             else:
                 self.statusLabel.value = f"❌ HTTPエラー: {err}"
